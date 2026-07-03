@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?><sqlb_project><db path="olist.db" readonly="0" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/><attached/><window><main_tabs open="structure browser query pragmas" current="2"/></window><tab_structure><column_width id="0" width="300"/><column_width id="1" width="0"/><column_width id="2" width="100"/><column_width id="3" width="1905"/><column_width id="4" width="0"/><expanded_item id="0" parent="1"/><expanded_item id="1" parent="0"/><expanded_item id="7" parent="0"/><expanded_item id="10" parent="0"/><expanded_item id="1" parent="1"/><expanded_item id="2" parent="1"/><expanded_item id="3" parent="1"/></tab_structure><tab_browse><table title="olist_orders_dataset" custom_title="0" dock_id="1" table="4,20:mainolist_orders_dataset"/><dock_state state="000000ff00000000fd00000001000000020000043c00000316fc0100000001fb000000160064006f0063006b00420072006f007700730065003101000000000000043c0000015c00ffffff0000043c0000000000000004000000040000000800000008fc00000000"/><default_encoding codec=""/><browse_table_settings><table schema="main" name="customer_features" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort/><column_widths><column index="1" value="257"/><column index="2" value="64"/><column index="3" value="62"/><column index="4" value="51"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="customer_rank" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort><column index="3" mode="0"/></sort><column_widths><column index="1" value="257"/><column index="2" value="132"/><column index="3" value="84"/><column index="4" value="132"/><column index="5" value="77"/><column index="6" value="300"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="olist_order_reviews_dataset" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort/><column_widths><column index="1" value="257"/><column index="2" value="257"/><column index="3" value="82"/><column index="4" value="202"/><column index="5" value="300"/><column index="6" value="156"/><column index="7" value="159"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="olist_orders_dataset" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort><column index="3" mode="1"/></sort><column_widths><column index="1" value="257"/><column index="2" value="257"/><column index="3" value="93"/><column index="4" value="162"/><column index="5" value="156"/><column index="6" value="172"/><column index="7" value="187"/><column index="8" value="183"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="product_category_name_translation" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_" freeze_columns="0"><sort/><column_widths><column index="1" value="300"/><column index="2" value="300"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table></browse_table_settings></tab_browse><tab_sql><sql name="SQL 1*">UPDATE customer_features
+SET recency = ROUND(
+julianday( (SELECT
+MAX(order_purchase_timestamp)
+FROM olist_orders_dataset)) - julianday(recency));
+
+CREATE TABLE customer_rank AS
+WITH review_agg AS (
+    SELECT
+        c.customer_unique_id,
+        AVG(r.review_score) AS avg_review_score,
+        COUNT(r.review_id)  AS total_reviews
+    FROM olist_order_reviews_dataset r
+    JOIN olist_orders_dataset o    ON r.order_id = o.order_id
+    JOIN olist_customers_dataset c ON o.customer_id = c.customer_id
+    GROUP BY c.customer_unique_id
+),
+
+delivery_agg AS (
+    SELECT
+        c.customer_unique_id,
+        AVG(
+            JULIANDAY(o.order_delivered_customer_date) -
+            JULIANDAY(o.order_purchase_timestamp)
+        )              AS avg_delivery_days,
+        COUNT(o.order_id) AS total_orders
+    FROM olist_orders_dataset o
+    JOIN olist_customers_dataset c ON o.customer_id = c.customer_id
+    WHERE o.order_delivered_customer_date IS NOT NULL
+    GROUP BY c.customer_unique_id
+),
+
+category_agg AS (
+    SELECT customer_unique_id, product_category_name AS top_category
+    FROM (
+        SELECT
+            c.customer_unique_id,
+            p.product_category_name,
+            ROW_NUMBER() OVER (
+                PARTITION BY c.customer_unique_id
+                ORDER BY COUNT(*) DESC
+            ) AS rn
+        FROM olist_order_items_dataset i
+        JOIN olist_products_dataset p  ON i.product_id = p.product_id
+        JOIN olist_orders_dataset o    ON i.order_id = o.order_id
+        JOIN olist_customers_dataset c ON o.customer_id = c.customer_id
+        GROUP BY c.customer_unique_id, p.product_category_name
+    )
+    WHERE rn = 1
+)
+
+SELECT
+    r.customer_unique_id,
+    r.avg_review_score,
+    r.total_reviews,
+    d.avg_delivery_days,
+    d.total_orders,
+    c.top_category
+FROM review_agg r
+LEFT JOIN delivery_agg  d ON r.customer_unique_id = d.customer_unique_id
+LEFT JOIN category_agg  c ON r.customer_unique_id = c.customer_unique_id;
+
+UPDATE customer_rank
+SET top_category = (
+SELECT ps.product_category_name_english
+FROM product_category_name_translation ps
+WHERE ps.product_category_name = customer_rank.top_category
+);
+
+UPDATE customer_rank
+SELECT
+order_purchase_timestamp
+FROM olist_orders_dataset o
+JOIN olist_customers_dataset c ON c.customer_id = o.customer_id
+JOIN customer_rank r ON r.customer_unique_id = c.customer_unique_id;
+
+</sql><current_tab id="0"/></tab_sql></sqlb_project>
